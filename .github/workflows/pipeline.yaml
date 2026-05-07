@@ -1,0 +1,75 @@
+name: Lead Intelligence Pipeline
+
+on:
+  schedule:
+    # Runs daily at 06:00 UTC — adjust to your preferred time
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    # Allows manual trigger from GitHub Actions UI
+    inputs:
+      reason:
+        description: "Reason for manual run"
+        required: false
+        default: "Manual trigger"
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60  # kill the job if it hangs
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright Chromium
+        run: playwright install chromium --with-deps
+
+      - name: Write Google credentials to file
+        # credentials.json is stored as a GitHub secret — write it to disk
+        # so sheets_exporter.py can read it at GOOGLE_CREDENTIALS_PATH
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+
+      - name: Create .env file from secrets
+        run: |
+          echo "SERPAPI_KEY=${{ secrets.SERPAPI_KEY }}" >> .env
+          echo "GOOGLE_SHEET_NAME=${{ secrets.GOOGLE_SHEET_NAME }}" >> .env
+          echo "GOOGLE_CREDENTIALS_PATH=credentials.json" >> .env
+
+      - name: Create data directories
+        run: mkdir -p data/raw data/cleaned data/scored logs
+
+      - name: Run pipeline
+        run: python main.py
+        env:
+          PYTHONUNBUFFERED: "1"  # ensures logs appear in real time in Actions UI
+
+      - name: Upload logs as artifact
+        if: always()  # upload logs even if pipeline fails
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-${{ github.run_number }}
+          path: logs/pipeline.log
+          retention-days: 30
+
+      - name: Upload scored data as artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scored-leads-${{ github.run_number }}
+          path: data/scored/scored_leads.csv
+          retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Pipeline failed on run #${{ github.run_number }}"
+          echo "Check logs artifact for details"
