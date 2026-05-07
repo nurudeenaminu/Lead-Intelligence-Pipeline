@@ -18,6 +18,23 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import json
+import os
+from pathlib import Path
+
+# On Streamlit Cloud, credentials.json is injected via secrets
+# On local, it's read from disk directly
+def _ensure_credentials():
+    creds_path = Path("credentials.json")
+    if not creds_path.exists():
+        creds = st.secrets.get("GOOGLE_CREDENTIALS_JSON", None)
+        if creds:
+            creds_path.write_text(
+                json.dumps(dict(creds)) if not isinstance(creds, str) else creds,
+                encoding="utf-8"
+            )
+
+_ensure_credentials()
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
