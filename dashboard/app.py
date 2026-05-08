@@ -24,17 +24,7 @@ from pathlib import Path
 
 # On Streamlit Cloud, credentials.json is injected via secrets
 # On local, it's read from disk directly
-def _ensure_credentials():
-    creds_path = Path("credentials.json")
-    if not creds_path.exists():
-        creds = st.secrets.get("GOOGLE_CREDENTIALS_JSON", None)
-        if creds:
-            creds_path.write_text(
-                json.dumps(dict(creds)) if not isinstance(creds, str) else creds,
-                encoding="utf-8"
-            )
 
-_ensure_credentials()
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -194,25 +184,53 @@ st.markdown("""
 @st.cache_data(ttl=300)
 def load_data() -> pd.DataFrame:
     """
-    Load scored leads CSV with correct dtypes.
+    Load scored leads from Google Sheets.
 
-    Cached for 5 minutes — refreshes automatically on next pipeline run.
+    Prefers Google Sheets as the source on Streamlit Cloud where the
+    local CSV doesn't exist. Falls back to local CSV for development.
+    Cached for 5 minutes to avoid hammering the Sheets API.
 
     Returns:
         DataFrame with all scored lead columns.
     """
-    if not SCORED_PATH.exists():
-        return pd.DataFrame()
+    # Try local CSV first (development)
+    if SCORED_PATH.exists():
+        df = pd.read_csv(
+            SCORED_PATH,
+            dtype={"phone": str, "website": str, "maps_url": str},
+        )
+    else:
+        # Streamlit Cloud — read from Google Sheets
+        try:
+            import gspread
+            from google.oauth2.service_account import Credentials
 
-    df = pd.read_csv(
-        SCORED_PATH,
-        dtype={"phone": str, "website": str, "maps_url": str},
-    )
+            scopes = [
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive",
+            ]
+
+            # Build credentials from Streamlit secrets
+            creds_dict = dict(st.secrets["GOOGLE_CREDENTIALS_JSON"])
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            client = gspread.authorize(creds)
+
+            sheet_name = st.secrets.get("GOOGLE_SHEET_NAME", "Lead Intelligence Pipeline")
+            spreadsheet = client.open(sheet_name)
+            records = spreadsheet.sheet1.get_all_records()
+
+            df = pd.DataFrame(records)
+            if df.empty:
+                return pd.DataFrame()
+
+        except Exception as exc:
+            st.error(f"Could not load data from Google Sheets: {exc}")
+            return pd.DataFrame()
+
     df["rating"]       = pd.to_numeric(df["rating"], errors="coerce")
     df["review_count"] = pd.to_numeric(df["review_count"], errors="coerce").fillna(0).astype(int)
     df["score"]        = pd.to_numeric(df["score"], errors="coerce").fillna(0).astype(int)
     return df
-
 
 def get_last_run() -> str:
     """
